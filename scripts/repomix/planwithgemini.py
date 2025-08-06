@@ -134,12 +134,10 @@ def build_repomix_command(
     """Build repomix command based on mode and parameters."""
     base_cmd = [
         "repomix",
-        "--format",
+        "--style",
         "xml",
         "--output",
         output_file,
-        "--stats",
-        "--token-count",
     ]
 
     if config_file and os.path.exists(config_file):
@@ -151,58 +149,40 @@ def build_repomix_command(
         print_colored(f"Keywords identified: {', '.join(keywords)}", Colors.BLUE)
 
         for keyword in keywords:
-            base_cmd.extend(
-                ["--include", f"**/*{keyword}*", "--include", f"**/{keyword}/**"]
-            )
-        base_cmd.extend(["--compression-level", "6"])
+            base_cmd.extend(["--include", f"**/*{keyword}*,**/{keyword}/**"])
+        base_cmd.extend(["--compress"])
 
     elif mode == "full":
         # Full codebase analysis
         base_cmd.extend(
             [
-                "--compression-level",
-                "9",
-                "--exclude",
-                "**/node_modules/**",
-                "--exclude",
-                "**/dist/**",
-                "--exclude",
-                "**/.git/**",
-                "--exclude",
-                "**/coverage/**",
+                "--compress",
+                "-i",
+                "**/node_modules/**,**/dist/**,**/.git/**,**/coverage/**",
             ]
         )
 
     elif mode == "quick":
         # Quick compressed analysis
-        base_cmd.extend(
-            ["--compression-level", "9", "--remove-comments", "--remove-empty-lines"]
-        )
+        base_cmd.extend(["--compress", "--remove-comments", "--remove-empty-lines"])
 
     elif mode == "security":
         # Security-focused analysis
         base_cmd.extend(
             [
                 "--include",
-                "**/auth/**",
-                "--include",
-                "**/security/**",
-                "--include",
-                "**/*config*",
-                "--include",
-                "**/*.env*",
-                "--security-check",
+                "**/auth/**,**/security/**,**/*config*,**/*.env*",
             ]
         )
 
     # Add any additional includes/excludes
-    if "includes" in additional_args:
-        for pattern in additional_args["includes"]:
-            base_cmd.extend(["--include", pattern])
+    if "includes" in additional_args and additional_args["includes"]:
+        patterns = ",".join(additional_args["includes"])
+        base_cmd.extend(["--include", patterns])
 
-    if "excludes" in additional_args:
-        for pattern in additional_args["excludes"]:
-            base_cmd.extend(["--exclude", pattern])
+    if "excludes" in additional_args and additional_args["excludes"]:
+        patterns = ",".join(additional_args["excludes"])
+        base_cmd.extend(["-i", patterns])
 
     # Add target directory
     base_cmd.append(additional_args.get("target_dir", "."))
