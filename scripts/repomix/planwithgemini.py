@@ -2,6 +2,7 @@
 """
 planwithgemini.py - Intelligent planning with repomix and Gemini
 Combines repomix's file packing capabilities with Gemini's analysis for comprehensive planning.
+Supports: gemini, ollama, anthropic CLI, or direct file output for manual analysis.
 """
 
 import argparse
@@ -31,8 +32,27 @@ def print_colored(message: str, color: str = Colors.NC):
     print(f"{color}{message}{Colors.NC}")
 
 
-def check_dependencies() -> Tuple[bool, List[str]]:
-    """Check if required tools are installed."""
+def detect_available_llm() -> Optional[str]:
+    """Detect which LLM CLI is available."""
+    llms = {
+        "gemini": ["gemini", "--help"],
+        "ollama": ["ollama", "list"],
+        "anthropic": ["anthropic", "--help"],
+        "openai": ["openai", "--help"],
+    }
+
+    for llm, cmd in llms.items():
+        try:
+            subprocess.run(cmd, capture_output=True, check=True)
+            return llm
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+
+    return None
+
+
+def check_dependencies() -> Tuple[bool, List[str], Optional[str]]:
+    """Check if required tools are installed and detect available LLM."""
     missing = []
 
     # Check repomix
@@ -41,13 +61,10 @@ def check_dependencies() -> Tuple[bool, List[str]]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         missing.append("repomix (install with: npm install -g repomix)")
 
-    # Check gemini
-    try:
-        subprocess.run(["gemini", "--help"], capture_output=True, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        missing.append("gemini (install from gemini CLI repository)")
+    # Detect available LLM
+    available_llm = detect_available_llm()
 
-    return len(missing) == 0, missing
+    return len(missing) == 0, missing, available_llm
 
 
 def extract_keywords(task: str) -> List[str]:
@@ -193,8 +210,8 @@ def build_repomix_command(
     return base_cmd
 
 
-def create_gemini_prompt(mode: str, task: str) -> str:
-    """Create appropriate Gemini prompt based on mode and task."""
+def create_prompt(mode: str, task: str) -> str:
+    """Create appropriate prompt based on mode and task."""
     prompts = {
         "auto": f"""Analyze this codebase context and create a detailed implementation plan for: {task}
 
@@ -296,13 +313,61 @@ def run_repomix(cmd: List[str], verbose: bool = False) -> Tuple[bool, str]:
         return False, e.stderr
 
 
-def run_gemini(
-    context_file: str, prompt: str, output_file: Optional[str] = None
+def run_llm_analysis(
+    context_file: str, prompt: str, output_file: Optional[str], llm_type: Optional[str]
 ) -> Tuple[bool, str]:
-    """Run Gemini analysis on the context file."""
-    print_colored("Running Gemini analysis...", Colors.BLUE)
+    """Run LLM analysis on the context file using available LLM."""
+    if not llm_type:
+        print_colored(
+            "No LLM CLI detected. Saving context and prompt for manual analysis.",
+            Colors.YELLOW,
+        )
 
-    cmd = ["gemini", "-p", f"@{context_file}", prompt]
+        # Save prompt to file for manual use
+        prompt_file = context_file.replace(".xml", "_prompt.txt")
+        with open(prompt_file, "w") as f:
+            f.write(prompt)
+
+        instructions = f"""
+Context file saved to: {context_file}
+Prompt saved to: {prompt_file}
+
+You can analyze this manually by:
+1. Using any LLM web interface (Claude, ChatGPT, etc.)
+2. Paste the prompt from {prompt_file}
+3. Upload or paste the context from {context_file}
+"""
+        if output_file:
+            with open(output_file, "w") as f:
+                f.write(instructions)
+        print(instructions)
+        return True, instructions
+
+    print_colored(f"Running {llm_type} analysis...", Colors.BLUE)
+
+    if llm_type == "gemini":
+        cmd = ["gemini", "-p", f"@{context_file}", prompt]
+    elif llm_type == "ollama":
+        # For ollama, we need to format differently
+        with open(context_file, "r") as f:
+            context = f.read()
+        full_prompt = f"{prompt}\n\nContext:\n{context}"
+        cmd = ["ollama", "run", "llama2", full_prompt]
+    elif llm_type == "anthropic":
+        with open(context_file, "r") as f:
+            context = f.read()
+        full_prompt = f"{prompt}\n\nContext:\n{context}"
+        cmd = [
+            "anthropic",
+            "messages",
+            "create",
+            "-m",
+            "claude-3-sonnet",
+            "-c",
+            full_prompt,
+        ]
+    else:
+        return False, f"Unsupported LLM type: {llm_type}"
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -316,7 +381,7 @@ def run_gemini(
 
         return True, result.stdout
     except subprocess.CalledProcessError as e:
-        print_colored(f"Error running Gemini: {e.stderr}", Colors.RED)
+        print_colored(f"Error running {llm_type}: {e.stderr}", Colors.RED)
         return False, e.stderr
 
 
@@ -347,7 +412,7 @@ def get_file_stats(file_path: str) -> Dict[str, str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Intelligent planning with repomix and Gemini",
+        description="Intelligent planning with repomix and LLM analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -385,16 +450,36 @@ Examples:
     parser.add_argument(
         "--keep-context", action="store_true", help="Keep context file after analysis"
     )
+    parser.add_argument(
+        "--llm",
+        choices=["gemini", "ollama", "anthropic", "auto"],
+        default="auto",
+        help="LLM to use (default: auto-detect)",
+    )
 
     args, unknown = parser.parse_known_args()
 
     # Check dependencies
-    deps_ok, missing = check_dependencies()
+    deps_ok, missing, available_llm = check_dependencies()
     if not deps_ok:
         print_colored("Missing dependencies:", Colors.RED)
         for dep in missing:
             print_colored(f"  - {dep}", Colors.RED)
+        print_colored("\nRun: ./scripts/repomix/setup_dependencies.sh", Colors.YELLOW)
         sys.exit(1)
+
+    # Determine which LLM to use
+    if args.llm == "auto":
+        llm_type = available_llm
+    else:
+        llm_type = args.llm if args.llm != "auto" else available_llm
+
+    if llm_type:
+        print_colored(f"Using {llm_type} for analysis", Colors.GREEN)
+    else:
+        print_colored(
+            "No LLM CLI detected - will save context for manual analysis", Colors.YELLOW
+        )
 
     # Set up paths
     temp_dir = Path(".temp")
@@ -405,7 +490,10 @@ Examples:
 
     config_file = args.config or "repomix-gemini.config.json"
 
-    print_colored(f"Planning with Gemini - Mode: {args.mode}", Colors.GREEN)
+    print_colored(
+        f"Planning with {llm_type or 'manual analysis'} - Mode: {args.mode}",
+        Colors.GREEN,
+    )
     print_colored(f"Task: {args.task}", Colors.GREEN)
     print()
 
@@ -447,11 +535,11 @@ Examples:
         tokens = int(token_match.group(1))
         print_colored(f"Total tokens: {tokens:,}", Colors.PURPLE)
 
-    # Create Gemini prompt
-    prompt = create_gemini_prompt(args.mode, args.task)
+    # Create prompt
+    prompt = create_prompt(args.mode, args.task)
 
-    # Run Gemini analysis
-    success, output = run_gemini(str(context_file), prompt, args.output)
+    # Run LLM analysis
+    success, output = run_llm_analysis(str(context_file), prompt, args.output, llm_type)
 
     if not success:
         sys.exit(1)
