@@ -48,3 +48,7 @@ repository-analysis/
 *.backup.*
 *~
 .DS_Store
+
+# Automatically added by UpToSpeed
+.claude/hooks/trigger-walkthrough.sh.ignored
+.temp/
